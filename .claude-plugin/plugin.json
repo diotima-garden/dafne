@@ -1,0 +1,5 @@
+{
+  "name": "dafne",
+  "description": "DAFNE — #include preprocessor, manifest reader, and context assembly for the node/grove tree",
+  "version": "1.0.0"
+}
