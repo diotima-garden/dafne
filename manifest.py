@@ -11,7 +11,8 @@ Parents are never manifest data: enumeration is `readdir(parents/)`, and
 their URLs live in `.gitmodules` — this module only walks the directories
 that are already there.
 """
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -61,6 +62,45 @@ def effective_requires(node_root: Path, seen: set[Path] | None = None) -> set[st
         requires |= effective_requires(parent, seen)
 
     return requires
+
+
+@dataclass(frozen=True)
+class Requirement:
+    name: str
+    declared_by: tuple[PurePosixPath, ...]  # relative to the queried node; "." = the node itself
+
+
+def requirements_with_provenance(node_root: Path) -> list[Requirement]:
+    """Same recursion as effective_requires, retaining where each name came
+    from. Paths are relative to the queried node, POSIX-normalized, spelling
+    out the parents/ chain (e.g. parents/language/parents/deck) since that
+    chain is the inheritance route — not a node name, which isn't unique.
+    All declaring nodes are listed, not just the first found. Sorted by
+    name; declared_by sorted by path."""
+    declared: dict[str, set[PurePosixPath]] = {}
+
+    def walk(current: Path, rel: PurePosixPath, ancestors: frozenset[Path]) -> None:
+        # `ancestors` guards against real cycles (a node reachable from
+        # itself along one path) without suppressing a diamond, where the
+        # same physical node is legitimately reached via two distinct
+        # sibling branches and must be visited — and recorded — both times.
+        resolved = current.resolve()
+        if resolved in ancestors:
+            return
+
+        manifest = parse_manifest(current)
+        for name in manifest.get("requires") or []:
+            declared.setdefault(name, set()).add(rel)
+
+        for parent in parent_dirs(current):
+            walk(parent, rel / "parents" / parent.name, ancestors | {resolved})
+
+    walk(node_root, PurePosixPath("."), frozenset())
+
+    return [
+        Requirement(name=name, declared_by=tuple(sorted(paths)))
+        for name, paths in sorted(declared.items())
+    ]
 
 
 def discover_banks(node_root: Path, seen: set[Path] | None = None) -> list[dict]:

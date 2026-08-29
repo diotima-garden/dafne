@@ -2,12 +2,16 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from pathlib import PurePosixPath
+
 from manifest import (
+    Requirement,
     discover_banks,
     discover_grove_banks,
     effective_requires,
     parent_dirs,
     parse_manifest,
+    requirements_with_provenance,
 )
 
 
@@ -87,6 +91,69 @@ class TestEffectiveRequires:
         bare = tmp_path / "bare"
         bare.mkdir()
         assert effective_requires(bare) == set()
+
+
+class TestRequirementsWithProvenance:
+    def test_node_declares_its_own_requirement(self, tmp_path):
+        node = make_node(tmp_path, "---\nformat: 0\nrequires:\n  - anki\n---\n")
+        assert requirements_with_provenance(node) == [
+            Requirement(name="anki", declared_by=(PurePosixPath("."),))
+        ]
+
+    def test_two_level_chain_only_grandparent_declares(self, tmp_path):
+        deck = make_node(tmp_path / "deck", "---\nformat: 0\nrequires:\n  - anki\n---\n")
+        language = make_node(tmp_path / "language", "---\nformat: 0\nrequires: []\n---\n")
+        (language / "parents").mkdir()
+        (language / "parents" / "deck").symlink_to(deck, target_is_directory=True)
+        spanish = make_node(tmp_path / "spanish", "---\nformat: 0\nrequires: []\n---\n")
+        (spanish / "parents").mkdir()
+        (spanish / "parents" / "language").symlink_to(language, target_is_directory=True)
+
+        assert requirements_with_provenance(spanish) == [
+            Requirement(
+                name="anki",
+                declared_by=(PurePosixPath("parents/language/parents/deck"),),
+            )
+        ]
+
+    def test_diamond_records_both_declaring_paths(self, tmp_path):
+        deck = make_node(tmp_path / "deck", "---\nformat: 0\nrequires:\n  - anki\n---\n")
+        left = make_node(tmp_path / "left", "---\nformat: 0\nrequires: []\n---\n")
+        (left / "parents").mkdir()
+        (left / "parents" / "deck").symlink_to(deck, target_is_directory=True)
+        right = make_node(tmp_path / "right", "---\nformat: 0\nrequires: []\n---\n")
+        (right / "parents").mkdir()
+        (right / "parents" / "deck").symlink_to(deck, target_is_directory=True)
+        grove = make_node(tmp_path / "grove", "---\nformat: 0\nrequires: []\n---\n")
+        (grove / "parents").mkdir()
+        (grove / "parents" / "left").symlink_to(left, target_is_directory=True)
+        (grove / "parents" / "right").symlink_to(right, target_is_directory=True)
+
+        [req] = requirements_with_provenance(grove)
+        assert req.name == "anki"
+        assert req.declared_by == (
+            PurePosixPath("parents/left/parents/deck"),
+            PurePosixPath("parents/right/parents/deck"),
+        )
+
+        # requirements_with_provenance uses a per-path ancestors guard (to
+        # keep visiting a diamond's second branch); effective_requires uses
+        # a global seen set (cheaper, name-only). They must still agree on
+        # the name set — physical identity means identical manifest contents
+        # regardless of which branch reaches it first.
+        assert {r.name for r in requirements_with_provenance(grove)} == effective_requires(grove)
+
+    def test_node_with_no_requires_key(self, tmp_path):
+        node = make_node(tmp_path, "---\nformat: 0\n---\n")
+        assert requirements_with_provenance(node) == []
+
+    def test_unknown_capability_name_passes_through(self, tmp_path):
+        node = make_node(
+            tmp_path, "---\nformat: 0\nrequires:\n  - video-transcode\n---\n"
+        )
+        assert requirements_with_provenance(node) == [
+            Requirement(name="video-transcode", declared_by=(PurePosixPath("."),))
+        ]
 
 
 class TestDiscoverBanks:
