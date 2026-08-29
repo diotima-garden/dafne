@@ -2,7 +2,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from manifest import effective_requires, parent_dirs, parse_manifest
+from manifest import (
+    discover_banks,
+    discover_grove_banks,
+    effective_requires,
+    parent_dirs,
+    parse_manifest,
+)
 
 
 def make_node(root: Path, body: str) -> Path:
@@ -81,3 +87,115 @@ class TestEffectiveRequires:
         bare = tmp_path / "bare"
         bare.mkdir()
         assert effective_requires(bare) == set()
+
+
+class TestDiscoverBanks:
+    def test_node_with_no_banks_key(self, tmp_path):
+        node = make_node(tmp_path, "---\nformat: 0\nrequires: []\n---\n")
+        assert discover_banks(node) == []
+
+    def test_grove_with_one_bank(self, tmp_path):
+        grove = make_node(
+            tmp_path,
+            "---\nformat: 0\nrequires: []\n"
+            "banks:\n"
+            "  - name: spanish-reading\n"
+            "    bank: ./reading-log\n"
+            "    graduate: false\n"
+            "---\n",
+        )
+        (grove / "reading-log").mkdir()
+        [bank] = discover_banks(grove)
+        assert bank["name"] == "spanish-reading"
+        assert bank["graduate"] is False
+        assert bank["bank"] == str((grove / "reading-log").resolve())
+
+    def test_bank_path_comes_back_absolute(self, tmp_path):
+        grove = make_node(
+            tmp_path,
+            "---\nformat: 0\nrequires: []\n"
+            "banks:\n"
+            "  - name: x\n"
+            "    bank: ./memory\n"
+            "---\n",
+        )
+        [bank] = discover_banks(grove)
+        assert Path(bank["bank"]).is_absolute()
+
+    def test_unknown_key_survives_round_trip(self, tmp_path):
+        grove = make_node(
+            tmp_path,
+            "---\nformat: 0\nrequires: []\n"
+            "banks:\n"
+            "  - name: x\n"
+            "    bank: ./memory\n"
+            "    recurse-mem-enable: true\n"
+            "---\n",
+        )
+        [bank] = discover_banks(grove)
+        assert bank["recurse-mem-enable"] is True
+
+    def test_two_level_parent_chain_only_child_declares_banks(self, tmp_path):
+        deck = make_node(tmp_path / "deck", "---\nformat: 0\nrequires: []\n---\n")
+        language = make_node(tmp_path / "language", "---\nformat: 0\nrequires: []\n---\n")
+        (language / "parents").mkdir()
+        (language / "parents" / "deck").symlink_to(deck, target_is_directory=True)
+        grove = make_node(
+            tmp_path / "grove",
+            "---\nformat: 0\nrequires: []\n"
+            "banks:\n"
+            "  - name: only-mine\n"
+            "    bank: ./memory\n"
+            "---\n",
+        )
+        (grove / "parents").mkdir()
+        (grove / "parents" / "language").symlink_to(language, target_is_directory=True)
+
+        banks = discover_banks(grove)
+        assert [b["name"] for b in banks] == ["only-mine"]
+
+    def test_parent_banks_are_collected_too(self, tmp_path):
+        deck = make_node(
+            tmp_path / "deck",
+            "---\nformat: 0\nrequires: []\n"
+            "banks:\n"
+            "  - name: from-parent\n"
+            "    bank: ./memory\n"
+            "---\n",
+        )
+        grove = make_node(
+            tmp_path / "grove",
+            "---\nformat: 0\nrequires: []\n"
+            "banks:\n"
+            "  - name: from-child\n"
+            "    bank: ./memory\n"
+            "---\n",
+        )
+        (grove / "parents").mkdir()
+        (grove / "parents" / "deck").symlink_to(deck, target_is_directory=True)
+
+        banks = discover_banks(grove)
+        assert {b["name"] for b in banks} == {"from-child", "from-parent"}
+
+
+class TestDiscoverGroveBanks:
+    def test_readdir_filters_on_dafne_manifest(self, tmp_path):
+        make_node(
+            tmp_path / "spanish",
+            "---\nformat: 0\nrequires: []\n"
+            "banks:\n"
+            "  - name: spanish-reading\n"
+            "    bank: ./reading-log\n"
+            "---\n",
+        )
+        (tmp_path / "not-a-grove").mkdir()
+
+        banks = discover_grove_banks(tmp_path)
+        assert [b["name"] for b in banks] == ["spanish-reading"]
+
+    def test_missing_base_dir_returns_empty(self, tmp_path):
+        assert discover_grove_banks(tmp_path / "does-not-exist") == []
+
+    def test_grove_with_no_banks_contributes_nothing(self, tmp_path):
+        make_node(tmp_path / "instruments", "---\nformat: 0\nrequires: []\n---\n")
+        assert discover_grove_banks(tmp_path) == []

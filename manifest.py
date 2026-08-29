@@ -61,3 +61,45 @@ def effective_requires(node_root: Path, seen: set[Path] | None = None) -> set[st
         requires |= effective_requires(parent, seen)
 
     return requires
+
+
+def discover_banks(node_root: Path, seen: set[Path] | None = None) -> list[dict]:
+    """Same recursion as effective_requires, collecting manifest['banks']
+    instead of manifest['requires']. Each entry's `bank:` key is resolved
+    from './'-relative to an absolute path against node_root — every other
+    key is opaque payload, copied through verbatim. Dafne understands only
+    that `bank:` is a path; what a bank is for is not this engine's
+    concern."""
+    if seen is None:
+        seen = set()
+    resolved = node_root.resolve()
+    if resolved in seen:
+        return []
+    seen.add(resolved)
+
+    manifest = parse_manifest(node_root)
+    banks = []
+    for entry in manifest.get("banks") or []:
+        entry = dict(entry)
+        if "bank" in entry:
+            entry["bank"] = str((resolved / entry["bank"]).resolve())
+        banks.append(entry)
+
+    for parent in parent_dirs(node_root):
+        banks.extend(discover_banks(parent, seen))
+
+    return banks
+
+
+def discover_grove_banks(base_dir: Path) -> list[dict]:
+    """readdir(base_dir), keep children carrying a DAFNE.md, discover_banks()
+    each. Mirrors parent_dirs' readdir-not-manifest discipline: which
+    groves exist is a directory listing, never configuration."""
+    base_dir = Path(base_dir)
+    if not base_dir.is_dir():
+        return []
+    banks = []
+    for child in sorted(base_dir.iterdir()):
+        if child.is_dir() and (child / "DAFNE.md").exists():
+            banks.extend(discover_banks(child))
+    return banks
